@@ -6,7 +6,7 @@ import DA.Action (unless)
 import DA.Foldable (forA_)
 
 setup : Script ()
-setup = do 
+setup = do
     -- Comptroller
     comptroller <- allocatePartyWithHint "Comptroller" (PartyIdHint "Comptroller")
     -- Manager
@@ -22,12 +22,12 @@ setup = do
             createCmd ServiceAgreement with
                 terms
                 minutes = 0
-    
+
     -- Create offers
     offer1 <- submitMulti [comptroller, manager] []  do
         createCmd Offer with
             terms
-    
+
     let terms2 = Terms
           with
             comptroller
@@ -37,7 +37,7 @@ setup = do
     offer2 <- submitMulti [comptroller, manager] [] do
         createCmd Offer with
             terms = terms2
-    
+
     x <- queryContractId contractor2 offer1
     property "Contractors should not be able to see Offer for another Contractor" $ isNone x
 
@@ -48,15 +48,15 @@ setup = do
     serviceAgreement <- test "Contractor can accept their own offer" $
         submit contractor do
             exerciseCmd offer1 AcceptOffer
-    
-    -- 
+
+    --
     reason <- test "Contractor can reject an offer" $ submit contractor2 do
         exerciseCmd offer2 RejectOffer with reason = "Rate is not high enough"
 
     test "Contractor cannot submit negative time increment" $
         submitMustFail contractor do
             exerciseByKeyCmd @ServiceAgreement contractor SubmitTime
-                with 
+                with
                     submitMinutes = -10
 
     test "Contractor can submit time" $
@@ -72,15 +72,15 @@ setup = do
         submitMustFail manager do
             exerciseByKeyCmd @ServiceAgreement contractor ApproveTime
                 with approvedMinutes = 360
-    
+
     serviceAgreementIdPostApproval <- test "Manager can approve time" $
         submit manager do
             exerciseByKeyCmd @ServiceAgreement contractor ApproveTime
                 with approvedMinutes = 120
-    
+
     serviceAgreementPostApproval <- queryContractId contractor serviceAgreementIdPostApproval
     property "Service Agreement balance is correctly updated after manager approval of time" $ (minutes <$> serviceAgreementPostApproval) == Some 60
-    
+
     contractorInvoices <- query @Invoice contractor
     property "Contractor can see own invoice" $ not $ null contractorInvoices
 
@@ -95,19 +95,21 @@ setup = do
             exerciseCmd contractId PayInvoice
 
     test "Comptroller can pay invoices" $ forA_ comptrollerInvoices $ \(contractId, _) -> do
-        result <- submit comptroller do
+        submit comptroller do
             exerciseCmd contractId PayInvoice
-        debug result
 
-    -- test "Invoice without corresponding service agreement can't be paid" do
-    --     badInvoice <- submit comptroller $ createCmd Invoice with
-    --         comptroller
-    --         contractor = contractor2
-    --         invoiceMinutes = 12345
-    --     submit comptroller $ exerciseCmd badInvoice PayInvoice
+    test "Invoice without corresponding service agreement can't be paid" do
+        badInvoice <- submit comptroller $ createCmd Invoice with
+            comptroller
+            contractor = contractor2
+            invoiceMinutes = 12345
+        submitMustFail comptroller $ exerciseCmd badInvoice PayInvoice
 
     pure ()
 
+-- | Describe a test and indicate whether it has passed. Errors running the
+-- Script action will halt execution as usual. The trace will show what test was
+-- running when the script failed.
 test : Text -> Script a -> Script a
 test msg f = do
     debug $ "Test: " <> msg <> "..."
@@ -115,5 +117,6 @@ test msg f = do
     debug $ "Passed"
     pure a
 
+-- | Assert that a given property is true
 property : Text -> Bool -> Script ()
 property msg pred = test msg $ unless pred $ assertFail "FAILED"

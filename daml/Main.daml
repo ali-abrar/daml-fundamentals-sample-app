@@ -27,12 +27,11 @@ template Offer
         controller terms.contractor
         do
           pure reason
-        
 
 template ServiceAgreement
   with
     terms : Terms
-    minutes : Int 
+    minutes : Int
   where
     ensure terms.rate > 0.00 && minutes >= 0
     signatory terms.contractor, terms.comptroller, terms.manager
@@ -75,5 +74,7 @@ template Invoice
     choice PayInvoice : ()
       controller comptroller
       do
-        fetchByKey @ServiceAgreement contractor
+        (_, s) <- fetchByKey @ServiceAgreement contractor
+        let amount = s.terms.rate * (intToNumeric invoiceMinutes / 60.00)
+        debug $ "Paid $" <> show amount <> " to " <> show contractor
         pure ()
