@@ -1,29 +1,119 @@
 module Test where
 import Main
 import Daml.Script
+import DA.Optional (isSome, isNone)
+import DA.Action (unless)
+import DA.Foldable (forA_)
 
-setup : Script ProjectId
+setup : Script ()
 setup = do 
-    alice <- allocatePartyWithHint "Alice" (PartyIdHint "Alice")
-    bob <- allocatePartyWithHint "Bob" (PartyIdHint "Bob")
-    charlie <- allocatePartyWithHint "Charlie" (PartyIdHint "Charlie")
+    -- Comptroller
+    comptroller <- allocatePartyWithHint "Comptroller" (PartyIdHint "Comptroller")
+    -- Manager
+    manager <- allocatePartyWithHint "Manager" (PartyIdHint "Manager")
+    -- Contractors
+    contractor <- allocatePartyWithHint "Contractor" (PartyIdHint "Contractor")
+    contractor2 <- allocatePartyWithHint "Contractor2" (PartyIdHint "Contractor2")
 
-    bobProjectIdea <- submit bob do
-        createCmd ProjectIdea with
-            employee = bob
-            colleague = charlie
-            manager = alice
-            project = "Daml Fundamentals Certification Capstone Rubric - Draft No. 1"
-            note = "Should include both backend AND frontend"
+    let terms = Terms with comptroller; contractor; manager; rate = 25.00
 
-    aliceRejects <- submit alice do 
-        exerciseCmd bobProjectIdea Reject with
-            feedback = "No way, teaching frontend at this point is too much"
+    test "Contractor can't create a service agreement without having an offer first" $
+        submitMustFail contractor do
+            createCmd ServiceAgreement with
+                terms
+                minutes = 0
     
-    bobRevises <- submit bob do
-        exerciseCmd aliceRejects Revise with
-            newProject = "Daml Fundamentals Certification Capstone Rubric - Draft No.2"
-            newNote = "Agreed, let's focus on the Daml backend and Navigator"
+    -- Create offers
+    offer1 <- submitMulti [comptroller, manager] []  do
+        createCmd Offer with
+            terms
+    
+    let terms2 = Terms
+          with
+            comptroller
+            contractor = contractor2
+            manager
+            rate = 27.50
+    offer2 <- submitMulti [comptroller, manager] [] do
+        createCmd Offer with
+            terms = terms2
+    
+    x <- queryContractId contractor2 offer1
+    property "Contractors should not be able to see Offer for another Contractor" $ isNone x
 
-    submit alice do
-        exerciseCmd bobRevises Accept
+    test "Other contractors can't accept an offer that isn't for them" $
+        submitMustFail contractor2 do
+            exerciseCmd offer1 AcceptOffer
+
+    serviceAgreement <- test "Contractor can accept their own offer" $
+        submit contractor do
+            exerciseCmd offer1 AcceptOffer
+    
+    -- 
+    reason <- test "Contractor can reject an offer" $ submit contractor2 do
+        exerciseCmd offer2 RejectOffer with reason = "Rate is not high enough"
+
+    test "Contractor cannot submit negative time increment" $
+        submitMustFail contractor do
+            exerciseByKeyCmd @ServiceAgreement contractor SubmitTime
+                with 
+                    submitMinutes = -10
+
+    test "Contractor can submit time" $
+        submit contractor do
+            exerciseByKeyCmd @ServiceAgreement contractor SubmitTime
+                with
+                    submitMinutes = 180
+
+    a <- queryContractKey @ServiceAgreement manager contractor
+    property "Manager can see service agreement to which they are a party" $ isSome a
+
+    test "Manager cannot approve more time than outstanding balance" $
+        submitMustFail manager do
+            exerciseByKeyCmd @ServiceAgreement contractor ApproveTime
+                with approvedMinutes = 360
+    
+    serviceAgreementIdPostApproval <- test "Manager can approve time" $
+        submit manager do
+            exerciseByKeyCmd @ServiceAgreement contractor ApproveTime
+                with approvedMinutes = 120
+    
+    serviceAgreementPostApproval <- queryContractId contractor serviceAgreementIdPostApproval
+    property "Service Agreement balance is correctly updated after manager approval of time" $ (minutes <$> serviceAgreementPostApproval) == Some 60
+    
+    contractorInvoices <- query @Invoice contractor
+    property "Contractor can see own invoice" $ not $ null contractorInvoices
+
+    comptrollerInvoices <- query @Invoice comptroller
+    property "Comptroller can see invoice" $ not $ null comptrollerInvoices
+
+    managerInvoices <- query @Invoice manager
+    property "Manager cannot see invoices" $ null managerInvoices
+
+    test "Contractor cannot pay own invoice" $ forA_ contractorInvoices $ \(contractId, _) ->
+        submitMustFail contractor do
+            exerciseCmd contractId PayInvoice
+
+    test "Comptroller can pay invoices" $ forA_ comptrollerInvoices $ \(contractId, _) -> do
+        result <- submit comptroller do
+            exerciseCmd contractId PayInvoice
+        debug result
+
+    -- test "Invoice without corresponding service agreement can't be paid" do
+    --     badInvoice <- submit comptroller $ createCmd Invoice with
+    --         comptroller
+    --         contractor = contractor2
+    --         invoiceMinutes = 12345
+    --     submit comptroller $ exerciseCmd badInvoice PayInvoice
+
+    pure ()
+
+test : Text -> Script a -> Script a
+test msg f = do
+    debug $ "Test: " <> msg <> "..."
+    a <- f
+    debug $ "Passed"
+    pure a
+
+property : Text -> Bool -> Script ()
+property msg pred = test msg $ unless pred $ assertFail "FAILED"

@@ -1,60 +1,79 @@
 module Main where
 
-type ProjectIdeaId = ContractId ProjectIdea
-type ProjectId = ContractId Project
+data Terms = Terms
+  with
+    contractor : Party
+    manager : Party
+    comptroller : Party
+    rate : Numeric 2
+  deriving (Show, Eq)
 
-template ProjectIdea
-    with
-        employee : Party
-        colleague : Party
-        manager : Party
-        project : Text
-        note : Text
-    where 
-        signatory employee
-        observer colleague, manager
-
-        -- employee can propose a project idea 
-        choice Propose : ProjectIdeaId -- "ProjectIdeaId" replaces "ContractId ProjectIdea"
-            controller employee
-            do
-                create this
-
-        -- upon getting rejected, employee can revise the project idea
-        choice Revise : ProjectIdeaId
-            with
-                newProject : Text
-                newNote : Text 
-            controller employee
-            do
-                create this with
-                    project = newProject
-                    note = newNote
-
-        -- manager can reject the project idea
-        choice Reject : ProjectIdeaId 
-            with
-                feedback : Text
-            controller manager
-            do
-                create this with 
-                    note = feedback 
+template Offer
+  with
+    terms : Terms
+  where
+    ensure terms.rate > 0.00
+    signatory terms.manager, terms.comptroller
+    observer terms.contractor
+    choice AcceptOffer : ContractId ServiceAgreement
+      controller terms.contractor
+      do
+        create ServiceAgreement
+          with
+            terms
+            minutes = 0
+    choice RejectOffer : Text
+        with reason : Text
+        controller terms.contractor
+        do
+          pure reason
         
-        -- manager can accept the project idea, which will archive the project that the choice is being exercised and create a new contract
-        choice Accept : ProjectId
-            controller manager
-            do
-                create Project with
-                    employeeInContract = employee
-                    managerInContract = manager
-                    projectTitle = project 
-                    description = note 
 
-template Project
-    with 
-        employeeInContract : Party
-        managerInContract : Party
-        projectTitle : Text 
-        description : Text 
-    where
-        signatory employeeInContract, managerInContract
+template ServiceAgreement
+  with
+    terms : Terms
+    minutes : Int 
+  where
+    ensure terms.rate > 0.00 && minutes >= 0
+    signatory terms.contractor, terms.comptroller, terms.manager
+    observer terms.comptroller, terms.manager
+    key terms.contractor : Party
+    maintainer key
+    choice SubmitTime : ContractId ServiceAgreement
+      with submitMinutes : Int
+      controller terms.contractor
+      do
+        create this
+          with
+            terms
+            minutes = this.minutes + submitMinutes
+    choice ApproveTime : ContractId ServiceAgreement
+      with approvedMinutes : Int
+      controller terms.manager
+      do
+        assertMsg "Cannot approve more time than contractor has submitted" $
+          approvedMinutes <= this.minutes
+        create Invoice
+          with
+            comptroller = this.terms.comptroller
+            contractor = this.terms.contractor
+            invoiceMinutes = approvedMinutes
+        create this
+          with
+            terms
+            minutes = this.minutes - approvedMinutes
+
+template Invoice
+  with
+    comptroller : Party
+    contractor : Party
+    invoiceMinutes : Int
+  where
+    ensure invoiceMinutes > 0
+    signatory comptroller
+    observer contractor
+    choice PayInvoice : ()
+      controller comptroller
+      do
+        fetchByKey @ServiceAgreement contractor
+        pure ()
